@@ -31,14 +31,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         now_vn = now_utc + datetime.timedelta(hours=7)
         now_str = now_vn.strftime("Thu %w, ngay %d/%m/%Y, luc %H:%M")
         
-        prompt = (
-            f"[THONG TIN THOI GIAN THUC]: Bay gio chinh xác la: {now_str}.\n"
-            f"Ban la Tro ly Anna. Hay tra loi tin nhan sau cua ban Quan dua tren dung moc thoi gian thuc tren:\n"
-            f"Tin nhan: '{user_text}'"
+        # Ep thoi gian thuc qua system_instruction
+        system_instruction = (
+            f"Thoi gian thuc hien tai la: {now_str}. "
+            f"Ban la Tro ly Anna. Khi duoc hoi ve ngay gio, BAT BUOC phai tra loi dua tren thoi gian thuc nay, tuyệt doi khong tu suy doan ngay thang khac."
         )
 
-        model = genai.GenerativeModel('gemini-3.1-flash-lite')
-        response = model.generate_content(prompt)
+        model = genai.GenerativeModel(
+            model_name='gemini-3.1-flash-lite',
+            system_instruction=system_instruction
+        )
+
+        response = model.generate_content(user_text)
         reply_text = response.text
 
         await context.bot.edit_message_text(

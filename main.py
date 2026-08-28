@@ -33,7 +33,7 @@ model = genai.GenerativeModel("gemini-pro")
 
 # 2. THAO TÁC CƠ SỞ DỮ LIỆU SUPABASE
 def insert_task_record(data: dict):
-    """Tạo bản ghi DRAFT trong Supabase theo Schema v2.0"""
+    """Tạo bản ghi DRAFT trong Supabase"""
     try:
         res = supabase.table("tasks_events").insert(data).execute()
         return res.data[0] if res.data else None
@@ -91,7 +91,7 @@ async def check_and_send_reminders(app):
 
         await asyncio.sleep(30)
 
-# 4. GIAO DIỆN INLINE CARD 3 TẦNG (SRS v2.0)
+# 4. GIAO DIỆN INLINE CARD 3 TẦNG
 def build_inline_card_markup(task_id: str, current_cat: str):
     """Bàn phím nút bấm tương tác trực tiếp 3 tầng"""
     keyboard = [
@@ -179,7 +179,7 @@ async def process_input_and_reply(update: Update, context: ContextTypes.DEFAULT_
             type_str = "📜 NHẬT KÝ QUÁ KHỨ" if record["is_retroactive"] else "🎯 KẾ HOẠCH TƯƠNG LAI"
 
             card_text = (
-                f"📝 **DỰ THẢO NHIỆM VỤ (INLINE CARD v2.0)**\n"
+                f"📝 **DỰ THẢO NHIỆM VỤ**\n"
                 f"----------------------------------------\n"
                 f"🔹 **Loại:** {type_str}\n"
                 f"🔹 **Nội dung:** {record['title']}\n"

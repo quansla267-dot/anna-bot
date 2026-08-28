@@ -12,7 +12,7 @@ ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
 
 # Cau hinh Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-pro')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id

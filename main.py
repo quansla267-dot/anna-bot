@@ -1,7 +1,8 @@
 import os
 import logging
 import datetime
-import json
+import zoneinfo
+import asyncio
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
@@ -18,19 +19,45 @@ ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
 
-def get_gemini_model():
-    # Truyền thời gian thực tế của hệ thống
-    now = datetime.datetime.now()
-    system_instruction = (
-        f"Hôm nay chính xác là Thứ Sáu, ngày {now.day} tháng {now.month} năm {now.year}, thời gian hiện tại là {now.strftime('%H:%M')}. "
-        f"Bạn là Trợ lý Anna thông minh, chuyên quản lý công việc và nhắc lịch cho bạn Quân. "
-        f"Nếu tin nhắn của bạn Quân có ý định đặt lịch/nhắc việc, hãy phân tích thời gian và nội dung. "
-        f"Trả lời ngắn gọn, lịch sự, chu đáo."
+# Múi giờ Việt Nam
+TZ_VN = zoneinfo.ZoneInfo("Asia/Ho_Chi_Minh")
+
+def ask_gemini(user_text):
+    # Lấy thời gian thực tế tại Việt Nam ngay thời điểm gửi
+    now = datetime.datetime.now(TZ_VN)
+    now_str = now.strftime("%A, ngày %d/%m/%Y, lúc %H:%M:%S")
+    
+    prompt = (
+        f"[THÔNG TIN HỆ THỐNG]: Bây giờ BẮT BUỘC phải tính theo mốc thời gian thực này: {now_str}.\n"
+        f"Bạn là Trợ lý Anna. Hãy trả lời câu hỏi/yêu cầu sau của bạn Quân một cách ngắn gọn, chính xác dựa trên mốc thời gian thực trên:\n"
+        f"Nội dung từ bạn Quân: '{user_text}'"
     )
-    return genai.GenerativeModel(
-        model_name='gemini-3.1-flash-lite',
-        system_instruction=system_instruction
-    )
+    
+    model = genai.GenerativeModel('gemini-3.1-flash-lite')
+    response = model.generate_content(prompt)
+    return response.text
+
+# Tiến trình chạy ngầm quét lịch hẹn
+async def check_reminders(app):
+    while True:
+        try:
+            now_iso = datetime.datetime.now(TZ_VN).isoformat()
+            response = supabase.table("reminders") \
+                .select("*") \
+                .lte("remind_at", now_iso) \
+                .eq("is_notified", False) \
+                .execute()
+
+            for item in response.data:
+                await app.bot.send_message(
+                    chat_id=item["user_id"], 
+                    text=f"⏰ **[NHẮC LỊCH LÀM VIỆC]**\n\nBạn Quân ơi, đến giờ thực hiện công việc: **{item['task']}** rồi nhé!"
+                )
+                supabase.table("reminders").update({"is_notified": True}).eq("id", item["id"]).execute()
+        except Exception as e:
+            logging.error(f"Lỗi cron nhắc lịch: {e}")
+            
+        await asyncio.sleep(30)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -43,17 +70,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_message = await update.message.reply_text("Dạ, Anna đang suy nghĩ...")
 
     try:
-        model = get_gemini_model()
-        response = model.generate_content(user_text)
-        reply_text = response.text
+        # Gọi Gemini xử lý với thời gian thực ép cứng
+        reply_text = ask_gemini(user_text)
 
-        # Thử lưu thông tin vào Supabase nếu câu lệnh chứa từ khóa nhắc việc
-        if any(word in user_text.lower() for word in ["nhắc", "hẹn", "lịch", "họp", "công việc"]):
+        # Nếu tin nhắn chứa yêu cầu nhắc việc, lưu vào Supabase
+        if any(w in user_text.lower() for w in ["nhắc", "hẹn", "lịch", "họp"]):
             try:
+                # Tạm thời đặt mốc nhắc (có thể nâng cấp AI tự bóc tách giờ sau)
+                remind_time = datetime.datetime.now(TZ_VN) + datetime.timedelta(days=1)
                 supabase.table("reminders").insert({
                     "user_id": str(user_id),
                     "task": user_text,
-                    "remind_at": datetime.datetime.now().isoformat()
+                    "remind_at": remind_time.isoformat(),
+                    "is_notified": False
                 }).execute()
             except Exception as se:
                 logging.error(f"Lỗi lưu Supabase: {se}")
@@ -75,4 +104,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    loop = asyncio.get_event_loop()
+    loop.create_task(check_reminders(app))
+    
     app.run_polling()

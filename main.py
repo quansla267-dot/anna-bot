@@ -17,7 +17,7 @@ from telegram.ext import (
     filters,
 )
 
-# 1. CAU HINH LOGGING & BIEN MOI TRUONG
+# 1. CẤU HÌNH HỆ THỐNG & BIẾN MÔI TRƯỜNG
 logging.basicConfig(level=logging.INFO)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -29,36 +29,35 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 # Khởi tạo Gemini & Supabase Client
 genai.configure(api_key=GEMINI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-model = genai.GenerativeModel("gemini-3.1-flash-lite")
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-# 2. CAC HAM XU LY DATABASE SUPABASE
+# 2. THAO TÁC CƠ SỞ DỮ LIỆU SUPABASE
 def insert_task_record(data: dict):
-    """Lưu bản ghi vào Supabase theo Schema v2.0"""
+    """Tạo bản ghi DRAFT trong Supabase theo Schema v2.0"""
     try:
         res = supabase.table("tasks_events").insert(data).execute()
         return res.data[0] if res.data else None
     except Exception as e:
-        logging.error(f"Loi insert Supabase: {e}")
+        logging.error(f"Lỗi insert Supabase: {e}")
         return None
 
 def update_task_status(task_id: str, status: str):
-    """Cập nhật trạng thái DRAFT, CONFIRMED, COMPLETED, CANCELLED"""
+    """Cập nhật trạng thái DRAFT -> CONFIRMED / CANCELLED"""
     try:
         supabase.table("tasks_events").update({"status": status}).eq("id", task_id).execute()
         return True
     except Exception as e:
-        logging.error(f"Loi update Supabase: {e}")
+        logging.error(f"Lỗi update Supabase: {e}")
         return False
 
-# 3. TIEN TRINH CHAY NGAM NHAC LIEU (BACKGROUND TASK)
+# 3. TIẾN TRÌNH NHẮC LỊCH NGẦM (BACKGROUND SCHEDULER)
 async def check_and_send_reminders(app):
-    """Tiến trình ngầm quét lịch hẹn tương lai và gửi thông báo"""
+    """Tiến trình quét và gửi thông báo cho các nhiệm vụ đã CONFIRMED"""
     while True:
         try:
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             now_iso = now_utc.isoformat()
 
-            # Quét các việc đã CONFIRMED, là lịch tương lai, chưa gửi thông báo
             response = (
                 supabase.table("tasks_events")
                 .select("*")
@@ -82,74 +81,74 @@ async def check_and_send_reminders(app):
                 }
                 group_str = cat_map.get(cat, "Nhiệm vụ")
 
-                msg = f"⏰ **ANNA NHẮC LỊCH BẠN QUÂN!**\n\n[{group_str}]\n👉 Nội dung: **{title}**"
+                msg = f"⏰ **ANNA NHẮC LỊCH BẠN QUÂN!**\n\n[{group_str}]\n👉 **Nội dung:** {title}"
                 await app.bot.send_message(chat_id=user_id, text=msg, parse_mode="Markdown")
 
-                # Đánh dấu đã gửi
                 supabase.table("tasks_events").update({"is_sent": True}).eq("id", task_id).execute()
 
         except Exception as e:
-            logging.error(f"Loi Tien trinh Nhac lich: {e}")
+            logging.error(f"Lỗi Tiến trình Nhắc lịch: {e}")
 
         await asyncio.sleep(30)
 
-# 4. TAO GIAO DIEN INLINE CARD 3 TANG (SRS v2.0)
+# 4. GIAO DIỆN INLINE CARD 3 TẦNG (SRS v2.0)
 def build_inline_card_markup(task_id: str, current_cat: str):
-    """Tạo bàn phím nút bấm 3 tầng tương tác trực tiếp"""
+    """Bàn phím nút bấm tương tác trực tiếp 3 tầng"""
     keyboard = [
         # Tầng 1: Xác nhận & Hủy
         [
             InlineKeyboardButton("✅ Duyệt & Lưu", callback_data=f"confirm_{task_id}"),
             InlineKeyboardButton("❌ Hủy bỏ", callback_data=f"cancel_{task_id}"),
         ],
-        # Tầng 2: Đổi phân loại Nhóm A/B/C
+        # Tầng 2: Đổi nhóm A / B / C
         [
             InlineKeyboardButton("🏷️ Nhóm A (Việc)", callback_data=f"setcat_GROUP_A_TASK_{task_id}"),
             InlineKeyboardButton("🏷️ Nhóm B (Lịch)", callback_data=f"setcat_GROUP_B_SCHEDULE_{task_id}"),
             InlineKeyboardButton("🏷️ Nhóm C (Cá nhân)", callback_data=f"setcat_GROUP_C_PERSONAL_{task_id}"),
         ],
-        # Tầng 3: Tùy chỉnh nhắc nhở
+        # Tầng 3: Thời gian nhắc
         [
-            InlineKeyboardButton("🔔 Nhắc trước 15p", callback_data=f"remind_15_{task_id}"),
-            InlineKeyboardButton("🔔 Nhắc trước 1h", callback_data=f"remind_60_{task_id}"),
+            InlineKeyboardButton("🔔 Trước 15 phút", callback_data=f"remind_15_{task_id}"),
+            InlineKeyboardButton("🔔 Trước 1 giờ", callback_data=f"remind_60_{task_id}"),
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# 5. XU LY TIN NHAN DA PHUONG THUC (TEXT/VOICE/IMAGE)
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# 5. XỬ LÝ DỮ LIỆU ĐẦU VÀO (TEXT, VOICE, IMAGE)
+async def process_input_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_content, content_type="TEXT"):
     user_id = update.effective_user.id
 
     if ALLOWED_USER_ID and str(ALLOWED_USER_ID) != "0" and str(user_id) != str(ALLOWED_USER_ID):
         await update.message.reply_text("Xin lỗi, bạn không có quyền truy cập Trợ lý Anna.")
         return
 
-    user_text = update.message.text
     sent_msg = await update.message.reply_text("⚡ Anna đang bóc tách ngữ cảnh...")
 
     try:
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         now_vn = now_utc + datetime.timedelta(hours=7)
-        now_str = now_vn.strftime("%Y-%m-%d %H:%M:%S")
+        now_str = now_vn.strftime("%Y-%m-%d %H:%M:%S (%A)")
 
-        prompt = (
+        prompt_system = (
             f"Thời gian hiện tại: {now_str} (Giờ Việt Nam GMT+7).\n"
-            f"Phân tích tin nhắn của bạn Quản Hữu Quân và xuất kết quả DUY NHẤT theo định dạng JSON với cấu trúc:\n"
+            f"Phân tích dữ liệu đầu vào của bạn Quản Hữu Quân và xuất DUY NHẤT một chuỗi JSON hợp lệ với cấu trúc:\n"
             f"{{\n"
             f'  "is_task": true/false,\n'
             f'  "title": "Tên chi tiết công việc/sự kiện",\n'
             f'  "category": "GROUP_A_TASK" hoặc "GROUP_B_SCHEDULE" hoặc "GROUP_C_PERSONAL",\n'
             f'  "start_time": "YYYY-MM-DD HH:MM:SS",\n'
             f'  "is_retroactive": true (nếu là nhật ký quá khứ) / false (nếu là lịch tương lai),\n'
-            f'  "remind_at": "YYYY-MM-DD HH:MM:SS" (thời điểm gửi thông báo, mặc định bằng start_time hoặc trước 30p)\n'
+            f'  "remind_at": "YYYY-MM-DD HH:MM:SS" (thời điểm gửi thông báo)\n'
             f"}}\n"
-            f"Tin nhắn: '{user_text}'"
         )
 
-        response = model.generate_content(prompt)
+        if content_type == "TEXT":
+            response = model.generate_content(f"{prompt_system}\nNội dung văn bản: '{raw_content}'")
+        elif content_type in ["VOICE", "IMAGE"]:
+            response = model.generate_content([prompt_system, raw_content])
+
         res_text = response.text.strip()
-        
-        # Bóc tách JSON
+
         if "```json" in res_text:
             res_text = res_text.split("```json")[1].split("```")[0].strip()
         elif "```" in res_text:
@@ -158,7 +157,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_json = json.loads(res_text)
 
         if data_json.get("is_task"):
-            # Tạo bản ghi DRAFT trong Supabase
             record = {
                 "user_id": user_id,
                 "title": data_json.get("title"),
@@ -200,7 +198,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
         else:
-            # Câu trả lời hội thoại bình thường
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id,
                 message_id=sent_msg.message_id,
@@ -208,14 +205,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
     except Exception as e:
-        logging.error(f"Loi xu ly message: {e}")
+        logging.error(f"Lỗi xử lý input: {e}")
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_msg.message_id,
-            text=f"Dạ, em gặp chút trục trặc: {e}"
+            text=f"Dạ, em gặp trục trặc khi bóc tách: {e}"
         )
 
-# 6. XU LY INTERACTIVE BUTTONS (CALLBACK QUERY)
+# Handlers riêng cho Text, Voice, Image
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await process_input_and_reply(update, context, update.message.text, content_type="TEXT")
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file = await context.bot.get_file(update.message.voice.file_id)
+    audio_bytes = await file.download_as_bytearray()
+    audio_data = {"mime_type": "audio/ogg", "data": bytes(audio_bytes)}
+    await process_input_and_reply(update, context, audio_data, content_type="VOICE")
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    photo = update.message.photo[-1]
+    file = await context.bot.get_file(photo.file_id)
+    img_bytes = await file.download_as_bytearray()
+    img_data = {"mime_type": "image/jpeg", "data": bytes(img_bytes)}
+    await process_input_and_reply(update, context, img_data, content_type="IMAGE")
+
+# 6. XỬ LÝ SỰ KIỆN NÚT BẤM (CALLBACK QUERY)
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -225,29 +239,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task_id = data.replace("confirm_", "")
         update_task_status(task_id, "CONFIRMED")
         await query.edit_message_text(
-            text=query.message.text + "\n\n✅ **ĐÃ XÁC NHẬN & ĐỒNG BỘ CSDL THÀNH CÔNG!**",
+            text=query.message.text + "\n\n✅ **ĐÃ DUYỆT & LƯU CSDL THÀNH CÔNG!**",
             parse_mode="Markdown"
         )
     elif data.startswith("cancel_"):
         task_id = data.replace("cancel_", "")
         update_task_status(task_id, "CANCELLED")
         await query.edit_message_text(
-            text=query.message.text + "\n\n❌ **ĐÃ HỦY NHIỆM VỤ NÀY.**",
+            text=query.message.text + "\n\n❌ **ĐÃ HỦY THẺ NHÁP NÀY.**",
             parse_mode="Markdown"
         )
     elif data.startswith("setcat_"):
         parts = data.split("_")
         new_cat = f"{parts[1]}_{parts[2]}_{parts[3]}"
         task_id = parts[4]
-        
         supabase.table("tasks_events").update({"category": new_cat}).eq("id", task_id).execute()
         await query.edit_message_text(
-            text=query.message.text + f"\n\n🔄 *Đã cập nhật phân loại mới! Bấm Duyệt để hoàn tất.*",
+            text=query.message.text + f"\n\n🔄 *Đã đổi nhóm thành công! Bấm Duyệt & Lưu để hoàn tất.*",
             reply_markup=build_inline_card_markup(task_id, new_cat),
             parse_mode="Markdown"
         )
 
-# 7. XUẤT BÁO CÁO FILE EXCEL TRỰC TIẾP (/baocao)
+# 7. XUẤT BÁO CÁO EXCEL DIRECTLY (/baocao)
 async def export_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_msg = await update.message.reply_text("📊 Anna đang kết xuất báo cáo Excel...")
     try:
@@ -259,8 +272,6 @@ async def export_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         df = pd.DataFrame(data)
-        
-        # Đổi tên cột chuẩn hành chính
         col_map = {
             "title": "Nội dung công việc / Lịch trình",
             "category": "Nhóm phân loại",
@@ -269,8 +280,7 @@ async def export_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "is_retroactive": "Lịch quá khứ (Retro)"
         }
         df = df.rename(columns=col_map)
-        
-        # Xuất ra bộ nhớ đệm Stream
+
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Nhật ký công việc")
@@ -288,19 +298,20 @@ async def export_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await sent_msg.delete()
 
     except Exception as e:
-        logging.error(f"Loi xuat bao cao: {e}")
+        logging.error(f"Lỗi xuất báo cáo: {e}")
         await sent_msg.edit_text(f"Lỗi xuất báo cáo: {e}")
 
-# 8. KHOI CHAY BOT
+# 8. KHỞI CHẠY BOT
 async def post_init(app):
     asyncio.create_task(check_and_send_reminders(app))
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
-    
-    # Handlers
+
     app.add_handler(CommandHandler("baocao", export_report))
     app.add_handler(CallbackQueryHandler(handle_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+
     app.run_polling()

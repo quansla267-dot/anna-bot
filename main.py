@@ -5,7 +5,7 @@ import datetime
 import asyncio
 import json
 import pandas as pd
-import google.generativeai as genai
+from google import genai
 from supabase import create_client, Client
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -26,14 +26,13 @@ ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Khởi tạo Gemini & Supabase Client
-genai.configure(api_key=GEMINI_API_KEY)
+# Khởi tạo Client Gemini SDK mới & Supabase Client
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-model = genai.GenerativeModel("gemini-pro")
 
 # 2. THAO TÁC CƠ SỞ DỮ LIỆU SUPABASE
 def insert_task_record(data: dict):
-    """Tạo bản ghi DRAFT trong Supabase"""
+    """Tạo bản ghi DRAFT trong Supabase theo Schema v2.0"""
     try:
         res = supabase.table("tasks_events").insert(data).execute()
         return res.data[0] if res.data else None
@@ -91,7 +90,7 @@ async def check_and_send_reminders(app):
 
         await asyncio.sleep(30)
 
-# 4. GIAO DIỆN INLINE CARD 3 TẦNG
+# 4. GIAO DIỆN INLINE CARD 3 TẦNG (SRS v2.0)
 def build_inline_card_markup(task_id: str, current_cat: str):
     """Bàn phím nút bấm tương tác trực tiếp 3 tầng"""
     keyboard = [
@@ -142,10 +141,17 @@ async def process_input_and_reply(update: Update, context: ContextTypes.DEFAULT_
             f"}}\n"
         )
 
+        # Gọi Gemini qua SDK google-genai mới
         if content_type == "TEXT":
-            response = model.generate_content(f"{prompt_system}\nNội dung văn bản: '{raw_content}'")
+            response = ai_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=f"{prompt_system}\nNội dung văn bản: '{raw_content}'"
+            )
         elif content_type in ["VOICE", "IMAGE"]:
-            response = model.generate_content([prompt_system, raw_content])
+            response = ai_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[prompt_system, raw_content]
+            )
 
         res_text = response.text.strip()
 
@@ -179,7 +185,7 @@ async def process_input_and_reply(update: Update, context: ContextTypes.DEFAULT_
             type_str = "📜 NHẬT KÝ QUÁ KHỨ" if record["is_retroactive"] else "🎯 KẾ HOẠCH TƯƠNG LAI"
 
             card_text = (
-                f"📝 **DỰ THẢO NHIỆM VỤ**\n"
+                f"📝 **DỰ THẢO NHIỆM VỤ (INLINE CARD v2.0)**\n"
                 f"----------------------------------------\n"
                 f"🔹 **Loại:** {type_str}\n"
                 f"🔹 **Nội dung:** {record['title']}\n"

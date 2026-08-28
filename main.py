@@ -1,23 +1,26 @@
 import os
 import logging
 import datetime
-import google.generativeai as genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+import google.generativeai as genai
 
-# Cau hinh logging
+# Cấu hình logging
 logging.basicConfig(level=logging.INFO)
 
-# Lay bien moi truong
+# Lấy các biến môi trường
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
 
+# Khởi tạo Gemini
 genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-3.1-flash-lite')
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
+    # Kiểm tra ID người dùng
     if ALLOWED_USER_ID and str(ALLOWED_USER_ID) != "0" and str(user_id) != str(ALLOWED_USER_ID):
         await update.message.reply_text("Xin lỗi, bạn không có quyền sử dụng bot này.")
         return
@@ -26,23 +29,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_message = await update.message.reply_text("Dạ, Anna đang xử lý...")
 
     try:
-        # Lay gio UTC va cong 7 tieng ra gio Viet Nam
+        # 1. Tính toán thời gian thực theo múi giờ Việt Nam (UTC+7)
         now_utc = datetime.datetime.now(datetime.timezone.utc)
         now_vn = now_utc + datetime.timedelta(hours=7)
-        now_str = now_vn.strftime("Thu %w, ngay %d/%m/%Y, luc %H:%M")
         
-        # Ep thoi gian thuc qua system_instruction
-        system_instruction = (
-            f"Thoi gian thuc hien tai la: {now_str}. "
-            f"Ban la Tro ly Anna. Khi duoc hoi ve ngay gio, BAT BUOC phai tra loi dua tren thoi gian thuc nay, tuyệt doi khong tu suy doan ngay thang khac."
+        weekdays = ["Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy", "Chủ Nhật"]
+        weekday_str = weekdays[now_vn.weekday()]
+        date_str = now_vn.strftime("%d/%m/%Y")
+        time_str = now_vn.strftime("%H:%M:%S")
+        
+        # 2. Tạo prompt ép mốc thời gian thực vào đầu tin nhắn
+        full_prompt = (
+            f"[HỆ THỐNG]: Mốc thời gian thực hiện tại là {weekday_str}, ngày {date_str}, lúc {time_str}.\n"
+            f"[VAI TRÒ]: Bạn là Trợ lý Anna phục vụ bạn Quản Hữu Quân. BẮT BUỘC dùng mốc thời gian thực trên để trả lời.\n\n"
+            f"Câu hỏi của bạn Quân: {user_text}"
         )
 
-        model = genai.GenerativeModel(
-            model_name='gemini-3.1-flash-lite',
-            system_instruction=system_instruction
-        )
-
-        response = model.generate_content(user_text)
+        # 3. Gửi cho Gemini xử lý
+        response = model.generate_content(full_prompt)
         reply_text = response.text
 
         await context.bot.edit_message_text(
@@ -52,7 +56,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     except Exception as e:
-        logging.error(f"Loi: {e}")
+        logging.error(f"Lỗi: {e}")
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=sent_message.message_id,

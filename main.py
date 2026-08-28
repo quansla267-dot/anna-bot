@@ -29,7 +29,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 # Khởi tạo Gemini & Supabase Client
 genai.configure(api_key=GEMINI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-pro")
 
 # 2. THAO TÁC CƠ SỞ DỮ LIỆU SUPABASE
 def insert_task_record(data: dict):
